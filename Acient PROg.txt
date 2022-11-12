@@ -1,0 +1,1945 @@
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Diagnostics;   
+
+using System.Drawing;
+using System.Linq;
+using System.Text;
+using System.Windows.Forms;
+using System.Net;
+using System.Net.Sockets;
+using System.Timers;
+using System.IO.Ports;
+using System.Drawing.Drawing2D;
+using System.Collections;
+using System.IO;
+
+
+using FuzzyLogicController;
+using FuzzyLogicController.FLC;
+using FuzzyLogicController.RuleEngine;
+using FuzzyLogicController.MFs;
+using ZedGraph;
+
+namespace RobotControlApplication
+{
+    public partial class FuzzyController : Form
+    {
+        private float temps = 0;
+        private float consigne_droit = 0;
+        private int VitesseMAx = 41; //à changer (tour/s)
+        private byte[] buffer = new byte[10];
+        private int reponse_droit = new int();
+        private int reponse_gauche = new int();
+        //private bool _continue = false;
+        private bool start = false;
+        private SerialPort serialPort1;
+        private delegate void UpdateStatusDelegate(string status);
+        private delegate void UpdateDelegate();
+        private UpdateDelegate Actualiser_ = null;
+        private UpdateStatusDelegate updateStatusDelegate_1 = null;
+        // private UpdateStatusDelegate updateStatusDelegate_1 = null;
+
+        bool iii = false; //    vitesse right recu
+
+        //private Timer myTimer;
+        private bool identification = false;
+      
+        // public Server client;
+        public struct Position
+        {
+            public double x, y, titha;
+
+        }
+        private double DiametreRoue = 16;// cm
+        private double entre_axe = 40; //(m) la distance entre les deux roues
+
+        public Position InitPosRobot    = new Position(); 
+        public Position CurrentPosRobot = new Position();
+        public Position Cible           = new Position(); 
+        public Point PosInit   =new Point(0,0);
+        public Point targetPos = new Point(0, 0);
+        public IList<Point> Path  = new List<Point>();
+        public int[] Speed_sent = new int[2];
+
+        public double E_Angle     = new double();
+        public double Tita_robot  = new double();
+        public double Tita_cible  = new double();
+        public double E_Distance  = new double();
+        public double dist_left   = new double();
+        public double dist_right  = new double();
+        public double V_L         = new double();
+        public double V_R         = new double();
+        public double cos_current = new double();
+        public double sin_current = new double();
+        public float  Te          = new float();
+        public int    cap1        = 500;  // capteur avant
+        public int    cap2        = 500;  // capteur droite
+        public int    cap3        = 500;  // capteur gauche
+        //StopWatch stopWatch = new StopWatch();
+        //public int Te = 10;
+
+
+        public bool connected = false;
+        public FuzzyController()
+        {
+            InitializeComponent();
+            //richTextBox1.AppendText("     Control Application for mobile robot \n");
+            //myTimer = new Timer();
+            this.updateStatusDelegate_1 = new UpdateStatusDelegate(this.displayreceivedmessage1);
+            //this.Actualiser_ = new UpdateDelegate(this.Actualisar);
+        }
+ 
+     
+        private void exitToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            this.Close();
+        }
+
+        private void button3_Click(object sender, EventArgs e)
+        {
+            richTextBox1.Clear();
+        }
+
+        private void Form1_Load(object sender, EventArgs e)
+        {
+            int d = int.Parse(textBox14.Text);
+            Te = d / 1000;
+            CreerGraphique(zedGraphControl1);
+            consignevitesse.Text = trackBar2.Value.ToString("00");
+            if (checkBox1.Checked) identification = true;
+        }
+
+        private void CreerGraphique(ZedGraphControl zgc)
+        {
+            GraphPane Pane = zgc.GraphPane;
+            PointPairList list1 = new PointPairList();
+            PointPairList list2 = new PointPairList();
+            PointPairList list3 = new PointPairList();
+            //agenda
+            //  if (checkBox1.Checked)
+            //   {
+            LineItem CourbeConsigne = Pane.AddCurve("Consigne (Volt)", list1, Color.Red);
+            LineItem CourbeMesure_droite = Pane.AddCurve("Right Motor(Tr/s)", list2, Color.Black);
+            LineItem CourbeMesure_gauche = Pane.AddCurve("0.63xVmax", list3, Color.Green);
+
+            //titre et les nom des Axes axe-X et axe-Y
+            Pane.Title.Text = "Reel Simulation of the velocity";
+            Pane.XAxis.Title.Text = "Time (s)";
+            Pane.YAxis.Title.Text = "Velocity(Round/s)";
+            //  }
+            /*  else if (checkBox2.Checked)
+              {
+                  LineItem CourbeConsigne = Pane.AddCurve("Consigne en vitesse", list1, Color.Red);
+                  LineItem CourbeMesure   = Pane.AddCurve("Right Motor", list2, Color.Black);
+                  LineItem CourbeCommande = Pane.AddCurve("Left Motor", list3, Color.Green);
+                  //titre et les nom des Axes axe-X et axe-Y
+                  Pane.Title.Text = "Reel Simulation of the velocity";
+                  Pane.XAxis.Title.Text = "Time (s)";
+                  Pane.YAxis.Title.Text = "Velocity(rad/s)";
+              }*/
+        }
+        //tracer le graphe
+        private void addDataToGraph(ZedGraphControl MoteurGraph1, XDate x, double tconsigne, double treponse_gauche, double treponse_droit)
+        {
+            LineItem curve = MoteurGraph1.GraphPane.CurveList[0] as LineItem;
+            IPointListEdit list = curve.Points as IPointListEdit;
+            list.Add(x, tconsigne);
+
+            //moteur droite
+            LineItem curve2 = MoteurGraph1.GraphPane.CurveList[1] as LineItem;
+            IPointListEdit list2 = curve2.Points as IPointListEdit;
+            list2.Add(x, treponse_gauche);
+
+            //moteur gauche
+            LineItem       curve3 = MoteurGraph1.GraphPane.CurveList[2] as LineItem;
+            IPointListEdit list3  = curve3.Points as IPointListEdit;
+            
+            list3.Add(x, treponse_droit);
+            MoteurGraph1.Invalidate();
+            zedGraphControl1.AxisChange();
+        }
+
+        public void DisplayReceiveMessag_USB(string m)
+        {
+            this.Invoke(this.updateStatusDelegate_1, new object[] { m });
+        }
+        private int[] consignes = new int[2];
+        private void button1_Click(object sender, EventArgs e)
+        {
+            if (!connected)
+            {
+                connected = true;
+                try
+                {
+                    serialPort1 = new SerialPort(comboBox1.Text);
+                    serialPort1.BaudRate = int.Parse(comboBox2.Text);  // tu va la changer aprtire du fichier                
+                    serialPort1.Parity = Parity.None;
+                    serialPort1.StopBits = StopBits.One;
+                    serialPort1.DataBits = 8;
+                    serialPort1.Handshake = Handshake.None;
+                    serialPort1.RtsEnable = true;
+                    serialPort1.Open();
+
+                    serialPort1.DataReceived += new SerialDataReceivedEventHandler(DataReceivedHandler);
+                    richTextBox1.AppendText(" USB Connected \n ");
+                }
+                catch (Exception Er)
+                {
+                    richTextBox1.AppendText("\nErreur détectée " + serialPort1.PortName + ": " + Er.Message);
+                    return; ;
+                }
+            } else richTextBox1.AppendText(" USB already Connected \n ");
+
+        }
+
+        int N_point;
+        public int data_recu = 0;
+        //================================< une autre méthode en utilise les timers>=====================
+        /*      
+          privatevoid timer1_Tick(expéditeur d'objet, EventArgs e)
+            {
+               string  valor_ao = null;
+               string  dados = null;
+               int data = 0;
+               timer1.Enabled = false;
+               if (serialPort1.IsOpen)
+               {
+                  try
+                  {
+                       // lecture
+                       data = serialPort1.ReadLine();
+                       if (data! = null)
+                         {
+                           data = data.Trim(); //supprimer tous les caractères d’espace blanc en début et en fin
+                           if (data.Length == 6)
+                           {
+                               // Récupère les informations DI, de 0 aux 2 premiers chiffres
+                               // convertir en entier et flèche en case à cocher.
+                               progressBar2.Value = Convert.ToInt16(data.Substring(0, 2));
+
+                               // Obtient les informations analogiques de l'IA de 2 à 4 chiffres
+                               // convertir en entier
+                               datas = Convert.ToInt16(data.Substring(2, 4));
+
+                               if ((datas <= progressBar1.Maximum) && (datas >= progressBar1.Minimum))
+                                   progressBar1.Value = data;
+                           }
+                       }
+
+                       // ÉCRIT
+                       char[] message = { 'A', '0', '0', '0', '0', '0', '0' };                      
+                       message[2] = '1'; else message[2] = '0';
+                       
+                       //Convertit la valeur en AO en chaîne formatée de 3 chiffres
+                       //passe à char et incorpore le caractère temporaire dans le tableau de messages
+                       valor_ao = String.Format("{0:0000}", hScrollBar2.Value);
+                       char[] temp = valor_ao.ToCharArray(0,4);
+
+                       message[3] = temp[0];
+                       message[4] = temp[1];
+                       message[5] = temp[2];
+                       message[6] = temp[3];
+                      // Envoi du message et suppression du tampon
+                   try
+                   {
+                     serialPort1.Write(message, 0, message.Length);
+                      serialPort1.DiscardOutBuffer();
+                   }
+                     catch (TimeoutException) { }
+                  }
+                     catch (TimeoutException) { }
+               }
+               timer1.Enabled = true;
+           }
+
+ // Le dernier bloc analysé en détail est timer2, avec une seule fonction, pour vider les mémoires tampons de réception toutes les secondes.
+
+       privatevoid timer2_Tick(object sender, EventArgs e)
+       {
+         if (serialPort1.IsOpen)
+          {
+           serialPort1.DiscardInBuffer();
+           serialPort1.DiscardOutBuffer();
+         }
+       }
+   */
+   
+        private void SendToRobot(bool s_d, bool s_g, int vd, int vg)
+        {
+
+            progressBar2.Value = Convert.ToInt16(vd);
+            progressBar1.Value = Convert.ToInt16(vg);
+            //tracer les deux vitesse sur la figure
+            temps += 0.01f;
+            addDataToGraph(zedGraphControl1, temps, 0, vd, vg); //1549.67  25.83                
+
+            if (this.connected)
+            {
+                reponse_droit  = vd;
+                reponse_gauche = vg;
+
+                char[] message      = { 'V', '0', '0', '0', '0', '0', '0', '0', '0' }; // 
+                if (s_d) message[1] = '1'; //signe de vitesse droite 
+                else message[1]     = '0';
+
+                if (s_g) message[2] = '1';//signe de vitesse gauche 
+                else message[2]     = '0';
+
+                //Convertit la valeur en chaîne formatée de 2 chiffres
+                //passe à char et incorpore le caractère temporaire dans le tableau de messages
+                string val_d = String.Format("{0:000}", reponse_droit);
+                string val_g = String.Format("{0:000}", reponse_gauche);
+
+                char[] temp = val_d.ToCharArray(0, 3);
+                char[] temp2 = val_g.ToCharArray(0, 3);
+                message[3] = temp[0];
+                message[4] = temp[1];
+                message[5] = temp[2];
+                message[6] = temp2[0];
+                message[7] = temp2[1];
+                message[8] = temp2[2];
+                // Envoi du message et suppression du tampon
+                try
+                {
+                    serialPort1.Write(message, 0, message.Length);
+                    serialPort1.DiscardOutBuffer();
+                }
+                catch (TimeoutException) { richTextBox1.AppendText("\nErreur détectée "); return; }
+            }
+            else { MessageBox.Show("Connecter vous et envoyer votre blabllla !"); return; }
+        }
+
+        public void displayreceivedmessage1(string status)
+        {
+            richTextBox1.AppendText(status + "\n");
+            textBox10.Text = Convert.ToString(cap1);
+            textBox9.Text = Convert.ToString(cap2);
+            textBox11.Text = Convert.ToString(cap3);
+
+            //  progressBar2.Value = (int)Speed_sent[0];
+            //  progressBar1.Value = (int)Speed_sent[1];
+
+            // textBox8.Text = Convert.ToString(CurrentPosRobot.x);
+            // textBox7.Text = Convert.ToString(CurrentPosRobot.y);
+            // textBox15.Text = Convert.ToString(CurrentPosRobot.titha);
+
+            //textBox6.Text = Convert.ToString((int)E_Angle);
+            //textBox5.Text = Convert.ToString((int)E_Distance);
+
+
+        }
+        private void DataReceivedHandler(object sender, SerialDataReceivedEventArgs e)
+        {
+
+            string data = serialPort1.ReadLine();
+            serialPort1.DiscardInBuffer(); // effacer le buffer
+
+            if (data != null)     //BitConverter.ToInt16(buffer, 0) != 0)              
+            {
+                data = data.Trim(); DisplayReceiveMessag_USB("Data Received: " + data);
+                // Récupère la Vd, de 0 aux 2 premiers chiffres et convertir en entier               
+ 
+                // Obtient la Vg de 2 à 4 chiffres et convertir en entier
+                cap1 = Convert.ToInt16(data.Substring(0, 2));
+                cap2 = Convert.ToInt16(data.Substring(2, 4));               
+                cap3 = Convert.ToInt16(data.Substring(4, 6));
+
+               // cap4 = Convert.ToInt16(data.Substring(4, 6));
+               // cap5 = Convert.ToInt16(data.Substring(4, 6));
+
+          /*      
+                double[] erreurs_ = Localise_Robot(Speed_sent[0], Speed_sent[1]);              
+                Speed_sent = FuzzyCalcule_Velocity(E_Angle, E_Distance, 300, 300, 300);// au debut il y a pas d'obstacles
+
+                if (connected)
+                {
+                    bool sens_droit = true; if (Speed_sent[0] < 0) sens_droit = false;
+                    bool sens_gauche = true; if (Speed_sent[1] < 0) sens_gauche = false;
+
+                    SendToRobot(sens_droit, sens_gauche, Speed_sent[0], Speed_sent[0]);
+                }
+
+                else MessageBox.Show("You must connect the robot ! ");
+          */         
+            }
+        }
+        private void button2_Click(object sender, EventArgs e)
+        {
+            serialPort1.Close();
+        }
+        private void button5_Click(object sender, EventArgs e)
+        {
+            serialPort1.Close();
+        }
+        public void SaveVelocity(string folder, float velocity)
+        {
+            System.IO.StreamWriter sw = new System.IO.StreamWriter(folder, false);
+            sw.WriteLine(Convert.ToString(velocity));
+            sw.Close();
+        }
+
+        //=======================================================================================================
+        //==========================================<Le Navigateur floue>========================================
+        //=======================================================================================================
+
+        public double[] Localise_Robot(int v_l, int v_r) // pour mettre à jour les nouvelle position X, Y, thetha du robot et calculer les erreurs
+        {
+            double diff_dit   = new double();
+            double somme_dist = new double();
+            double Fonc       = new double();
+           
+            V_L = v_l * 0.37;  // 0.37 est le rapport de la reduction 
+            V_R = v_r * 0.37;
+       
+            // calculer les erreurs:
+            dist_left  = V_L * Te * Math.PI * DiametreRoue;    // la distance parcoru la roue gauche en (cm)
+            dist_right = V_R * Te * Math.PI * DiametreRoue;   // la distance parcoru la roue gauche en (cm)
+            cos_current = Math.Cos(InitPosRobot.titha);
+            sin_current = Math.Sin(InitPosRobot.titha);
+
+            if ((v_l == v_r) || (v_l == v_r + 1) || (v_l == v_r - 1) || (v_r == v_l + 1) || (v_r == v_l - 1)) // Si le Deplacement s'est fait selon une ligne droite 
+            {
+                CurrentPosRobot.x = InitPosRobot.x + dist_left * cos_current;
+                CurrentPosRobot.y = InitPosRobot.y + dist_left * sin_current;
+                CurrentPosRobot.titha = InitPosRobot.titha;
+            }
+            else
+            {
+                // Deplacement selon un arc
+                somme_dist = dist_right + dist_left;
+                diff_dit = dist_right - dist_left;
+                Fonc = entre_axe * somme_dist / 2.0 / diff_dit;
+
+                CurrentPosRobot.titha = InitPosRobot.titha + diff_dit / entre_axe;  // Calculer la nouvelle orientation
+                CurrentPosRobot.x = InitPosRobot.x + Fonc * (Math.Sin(CurrentPosRobot.titha) - sin_current);
+                CurrentPosRobot.y = InitPosRobot.y + Fonc * (Math.Cos(CurrentPosRobot.titha) - cos_current); // chnager le "-" par un "+"                              
+                /* Keep in the range -PI to +PI */
+                if (CurrentPosRobot.titha > Math.PI)  CurrentPosRobot.titha += 2.0 * Math.PI;
+                if (CurrentPosRobot.titha < -Math.PI) CurrentPosRobot.titha += 2.0 * Math.PI;
+            }
+
+            E_Distance = Math.Round(Math.Sqrt((CurrentPosRobot.x - Cible.x) * (CurrentPosRobot.x - Cible.x) + (CurrentPosRobot.y - Cible.y) * (CurrentPosRobot.y - Cible.y)));
+            E_Angle    = Math.Round(Math.Atan2(Cible.y - CurrentPosRobot.y, Cible.x - CurrentPosRobot.x)); // CurrentPosRobot.titha - Cible.titha;            
+
+            //mis à jour l'affichage
+            textBox8.Text = Convert.ToString(CurrentPosRobot.x);
+            textBox7.Text = Convert.ToString(CurrentPosRobot.x);
+            textBox15.Text = Convert.ToString(CurrentPosRobot.titha);
+            //this.Invoke(new EventHandler(Actualisar)); 
+            textBox6.Text = Convert.ToString(E_Angle);
+            textBox5.Text = Convert.ToString((int)E_Distance);
+
+            InitPosRobot.x = CurrentPosRobot.x;
+            InitPosRobot.y = CurrentPosRobot.y;
+            InitPosRobot.titha = CurrentPosRobot.titha;
+            return (new double[2] { E_Angle, E_Distance }) ;
+        }
+
+        public int[] FuzzyCalcule_Velocity(double Erreur_Angle, double Erreur_distance, int cap1, int cap2, int cap3)
+        {
+
+            Config conf = new Config(ImpMethod.Prod, ConnMethod.Min);
+            int[] Vellocity = new int[2]; // les vitesse des deux moteur                        
+
+            // Input ()  
+            LingVariable E_Angle = new LingVariable("E_Angle", VarType.Input);// en cm
+            E_Angle.setRange(-200, 200);
+            E_Angle.addMF(new Trapmf("LM", -200, -100, -50, -25));
+            E_Angle.addMF(new Trimf("LS", 50, -25, 0));
+            E_Angle.addMF(new Trimf("Z", -1, 0, 1));
+            E_Angle.addMF(new Trimf("RS", 0, 25, 50));
+            E_Angle.addMF(new Trapmf("RM", 25, 50, 100, 200));
+
+            LingVariable E_Distance = new LingVariable("E_Distance", VarType.Input);// en cm
+            E_Distance.setRange(0, 300);
+            E_Distance.addMF(new Trimf("Z", 0, 0, 0));
+            E_Distance.addMF(new Trimf("S", 0, 80, 100));
+            E_Distance.addMF(new Trimf("M", 80, 100, 150));
+            E_Distance.addMF(new Trapmf("B", 100, 150, 200, 500));
+
+            LingVariable Cap1 = new LingVariable("Cap1", VarType.Input);// en cm
+            Cap1.setRange(0, 200);
+            Cap1.addMF(new Trapmf("N1", 0, 0, 25, 30));
+            Cap1.addMF(new Trimf("M1", 25, 40, 50));
+            Cap1.addMF(new Trapmf("F1", 50, 100, 100, 500));
+
+            LingVariable Cap2 = new LingVariable("Cap2", VarType.Input);// en cm
+            Cap2.setRange(0, 200);
+            Cap2.addMF(new Trapmf("N2", 0, 0, 25, 30));
+            Cap2.addMF(new Trimf("M2", 25, 40, 50));
+            Cap2.addMF(new Trapmf("F2", 40, 50, 100, 500));
+
+            LingVariable Cap3 = new LingVariable("Cap3", VarType.Input);// en cm
+            Cap3.setRange(0, 200);
+            Cap3.addMF(new Trapmf("N3", 0, 0, 25, 30));
+            Cap3.addMF(new Trimf("M3", 25, 40, 50));
+            Cap3.addMF(new Trapmf("F3", 40, 50, 100, 500));
+
+            // Output ()
+
+            LingVariable Vd = new LingVariable("Vd", VarType.Output); //en tours/s
+            Vd.setRange(-41, 41);
+            Vd.addMF(new Trimf("Z", 0, 0, 0));
+            Vd.addMF(new Trimf("PS", 10, 15, 20));
+            Vd.addMF(new Trimf("PM", 15, 20, 25));
+            Vd.addMF(new Trimf("PR", 20, 35, 41));
+            Vd.addMF(new Trimf("NS", -20, -15, -10));
+            Vd.addMF(new Trimf("NM", -25, -20, -15));
+            Vd.addMF(new Trimf("NF", -41, -35, -20));
+            LingVariable Vg = new LingVariable("Vg", VarType.Output); //en tours/s 
+            Vg.setRange(-41, 41);
+            Vg.addMF(new Trimf("Z", 0, 0, 0));
+            Vg.addMF(new Trimf("PS", 10, 15, 20));
+            Vg.addMF(new Trimf("PM", 15, 20, 25));
+            Vg.addMF(new Trimf("PF", 20, 35, 41));
+            Vg.addMF(new Trimf("NS", -20, -15, -10));
+            Vg.addMF(new Trimf("NM", -25, -20, -15));
+            Vg.addMF(new Trimf("NF", -41, -35, -20));
+
+            FLC c = new FLC(conf);
+            double E_ang = Erreur_Angle;
+            double E_dist = Erreur_distance;
+            int Capt1 = cap1;
+            int Capt2 = cap2;
+            int Capt3 = cap3;
+
+            FuzzySet set1 = new FuzzySet(c.Fuzzification(E_ang, E_Angle), E_Angle.Name);
+            FuzzySet set2 = new FuzzySet(c.Fuzzification(E_dist, E_Distance), E_Distance.Name);
+            FuzzySet set3 = new FuzzySet(c.Fuzzification(Capt1, Cap1), Cap1.Name);
+            FuzzySet set4 = new FuzzySet(c.Fuzzification(Capt2, Cap2), Cap2.Name);
+            FuzzySet set5 = new FuzzySet(c.Fuzzification(Capt3, Cap3), Cap3.Name);
+
+            // affichage du l'étape de la fuzzification
+            DisplayReceiveMessag_USB("1. Les Inputs");
+            DisplayReceiveMessag_USB("E_Angle: " + E_ang.ToString());
+            DisplayReceiveMessag_USB("E_Distance: " + E_dist.ToString());
+            DisplayReceiveMessag_USB("Capteur avant: " + Capt1.ToString());
+            DisplayReceiveMessag_USB("Capteur gauche: " + Capt2.ToString());
+            DisplayReceiveMessag_USB("Capteur droite: " + Capt3.ToString());
+
+            List<FuzzySet> fuzset = new List<FuzzySet>();
+            fuzset.Add(set1);
+            fuzset.Add(set2);
+            fuzset.Add(set3);
+            fuzset.Add(set4);
+            fuzset.Add(set5);
+
+            DisplayReceiveMessag_USB("2. Fuzzfication of inputs");
+            for (int i = 0; i < fuzset.Count; i++)
+            {
+                DisplayReceiveMessag_USB(fuzset[i].Variable);
+                for (int j = 0; j < fuzset[i].Set.Count; j++)
+                {
+                    DisplayReceiveMessag_USB(fuzset[i].Set[j].ToString());
+                }
+            }
+            // LIGNE 1
+            List<RuleItem> rule1in = new List<RuleItem>();
+            List<RuleItem> rule1out = new List<RuleItem>();
+
+            List<RuleItem> rule2in = new List<RuleItem>();
+            List<RuleItem> rule2out = new List<RuleItem>();
+
+            List<RuleItem> rule3in = new List<RuleItem>();
+            List<RuleItem> rule3out = new List<RuleItem>();
+
+            List<RuleItem> rule4in = new List<RuleItem>();
+            List<RuleItem> rule4out = new List<RuleItem>();
+
+            List<RuleItem> rule5in = new List<RuleItem>();
+            List<RuleItem> rule5out = new List<RuleItem>();
+
+            List<RuleItem> rule6in = new List<RuleItem>();
+            List<RuleItem> rule6out = new List<RuleItem>();
+
+            List<RuleItem> rule7in = new List<RuleItem>();
+            List<RuleItem> rule7out = new List<RuleItem>();
+
+            List<RuleItem> rule8in = new List<RuleItem>();
+            List<RuleItem> rule8out = new List<RuleItem>();
+
+            List<RuleItem> rule9in = new List<RuleItem>();
+            List<RuleItem> rule9out = new List<RuleItem>();
+
+            List<RuleItem> rule10in = new List<RuleItem>();
+            List<RuleItem> rule10out = new List<RuleItem>();
+
+            List<RuleItem> rule11in = new List<RuleItem>();
+            List<RuleItem> rule11out = new List<RuleItem>();
+
+            List<RuleItem> rule12in = new List<RuleItem>();
+            List<RuleItem> rule12out = new List<RuleItem>();
+
+            List<RuleItem> rule13in = new List<RuleItem>();
+            List<RuleItem> rule13out = new List<RuleItem>();
+
+            List<RuleItem> rule14in = new List<RuleItem>();
+            List<RuleItem> rule14out = new List<RuleItem>();
+
+            List<RuleItem> rule15in = new List<RuleItem>();
+            List<RuleItem> rule15out = new List<RuleItem>();
+            // LIGNE 2
+            List<RuleItem> rule16in = new List<RuleItem>();
+            List<RuleItem> rule16out = new List<RuleItem>();
+
+            List<RuleItem> rule17in = new List<RuleItem>();
+            List<RuleItem> rule17out = new List<RuleItem>();
+
+            List<RuleItem> rule18in = new List<RuleItem>();
+            List<RuleItem> rule18out = new List<RuleItem>();
+
+            List<RuleItem> rule19in = new List<RuleItem>();
+            List<RuleItem> rule19out = new List<RuleItem>();
+
+            List<RuleItem> rule20in = new List<RuleItem>();
+            List<RuleItem> rule20out = new List<RuleItem>();
+
+            List<RuleItem> rule21in = new List<RuleItem>();
+            List<RuleItem> rule21out = new List<RuleItem>();
+
+            List<RuleItem> rule22in = new List<RuleItem>();
+            List<RuleItem> rule22out = new List<RuleItem>();
+
+            List<RuleItem> rule23in = new List<RuleItem>();
+            List<RuleItem> rule23out = new List<RuleItem>();
+
+            List<RuleItem> rule24in = new List<RuleItem>();
+            List<RuleItem> rule24out = new List<RuleItem>();
+
+            List<RuleItem> rule25in = new List<RuleItem>();
+            List<RuleItem> rule25out = new List<RuleItem>();
+
+            List<RuleItem> rule26in = new List<RuleItem>();
+            List<RuleItem> rule26out = new List<RuleItem>();
+
+            List<RuleItem> rule27in = new List<RuleItem>();
+            List<RuleItem> rule27out = new List<RuleItem>();
+
+            List<RuleItem> rule28in = new List<RuleItem>();
+            List<RuleItem> rule28out = new List<RuleItem>();
+
+            List<RuleItem> rule29in = new List<RuleItem>();
+            List<RuleItem> rule29out = new List<RuleItem>();
+
+            List<RuleItem> rule30in = new List<RuleItem>();
+            List<RuleItem> rule30out = new List<RuleItem>();
+            //LIGNE 3
+            List<RuleItem> rule31in = new List<RuleItem>();
+            List<RuleItem> rule31out = new List<RuleItem>();
+
+            List<RuleItem> rule32in = new List<RuleItem>();
+            List<RuleItem> rule32out = new List<RuleItem>();
+
+            List<RuleItem> rule33in = new List<RuleItem>();
+            List<RuleItem> rule33out = new List<RuleItem>();
+
+            List<RuleItem> rule34in = new List<RuleItem>();
+            List<RuleItem> rule34out = new List<RuleItem>();
+
+            List<RuleItem> rule35in = new List<RuleItem>();
+            List<RuleItem> rule35out = new List<RuleItem>();
+
+            List<RuleItem> rule36in = new List<RuleItem>();
+            List<RuleItem> rule36out = new List<RuleItem>();
+
+            List<RuleItem> rule37in = new List<RuleItem>();
+            List<RuleItem> rule37out = new List<RuleItem>();
+
+            List<RuleItem> rule38in = new List<RuleItem>();
+            List<RuleItem> rule38out = new List<RuleItem>();
+
+            List<RuleItem> rule39in = new List<RuleItem>();
+            List<RuleItem> rule39out = new List<RuleItem>();
+
+            List<RuleItem> rule40in = new List<RuleItem>();
+            List<RuleItem> rule40out = new List<RuleItem>();
+
+            List<RuleItem> rule41in = new List<RuleItem>();
+            List<RuleItem> rule41out = new List<RuleItem>();
+
+            List<RuleItem> rule42in = new List<RuleItem>();
+            List<RuleItem> rule42out = new List<RuleItem>();
+
+            List<RuleItem> rule43in = new List<RuleItem>();
+            List<RuleItem> rule43out = new List<RuleItem>();
+
+            List<RuleItem> rule44in = new List<RuleItem>();
+            List<RuleItem> rule44out = new List<RuleItem>();
+
+            List<RuleItem> rule45in = new List<RuleItem>();
+            List<RuleItem> rule45out = new List<RuleItem>();
+
+            //LIGNE 4
+            List<RuleItem> rule46in = new List<RuleItem>();
+            List<RuleItem> rule46out = new List<RuleItem>();
+
+            List<RuleItem> rule47in = new List<RuleItem>();
+            List<RuleItem> rule47out = new List<RuleItem>();
+
+            List<RuleItem> rule48in = new List<RuleItem>();
+            List<RuleItem> rule48out = new List<RuleItem>();
+
+            List<RuleItem> rule49in = new List<RuleItem>();
+            List<RuleItem> rule49out = new List<RuleItem>();
+
+            List<RuleItem> rule50in = new List<RuleItem>();
+            List<RuleItem> rule50out = new List<RuleItem>();
+
+            List<RuleItem> rule51in = new List<RuleItem>();
+            List<RuleItem> rule51out = new List<RuleItem>();
+
+            List<RuleItem> rule52in = new List<RuleItem>();
+            List<RuleItem> rule52out = new List<RuleItem>();
+
+            List<RuleItem> rule53in = new List<RuleItem>();
+            List<RuleItem> rule53out = new List<RuleItem>();
+
+            List<RuleItem> rule54in = new List<RuleItem>();
+            List<RuleItem> rule54out = new List<RuleItem>();
+
+            List<RuleItem> rule55in  = new List<RuleItem>();
+            List<RuleItem> rule55out = new List<RuleItem>();
+
+            List<RuleItem> rule56in  = new List<RuleItem>();
+            List<RuleItem> rule56out = new List<RuleItem>();
+
+            List<RuleItem> rule57in  = new List<RuleItem>();
+            List<RuleItem> rule57out = new List<RuleItem>();
+
+            List<RuleItem> rule58in  = new List<RuleItem>();
+            List<RuleItem> rule58out = new List<RuleItem>();
+
+            List<RuleItem> rule59in  = new List<RuleItem>();
+            List<RuleItem> rule59out = new List<RuleItem>();
+
+            List<RuleItem> rule60in  = new List<RuleItem>();
+            List<RuleItem> rule60out = new List<RuleItem>();
+
+            //LIGNE 5
+            List<RuleItem> rule61in  = new List<RuleItem>();
+            List<RuleItem> rule61out = new List<RuleItem>();
+
+            List<RuleItem> rule62in  = new List<RuleItem>();
+            List<RuleItem> rule62out = new List<RuleItem>();
+
+            List<RuleItem> rule63in  = new List<RuleItem>();
+            List<RuleItem> rule63out = new List<RuleItem>();
+
+            List<RuleItem> rule64in  = new List<RuleItem>();
+            List<RuleItem> rule64out = new List<RuleItem>();
+
+            List<RuleItem> rule65in  = new List<RuleItem>();
+            List<RuleItem> rule65out = new List<RuleItem>();
+
+            List<RuleItem> rule66in  = new List<RuleItem>();
+            List<RuleItem> rule66out = new List<RuleItem>();
+
+            List<RuleItem> rule67in  = new List<RuleItem>();
+            List<RuleItem> rule67out = new List<RuleItem>();
+
+            List<RuleItem> rule68in  = new List<RuleItem>();
+            List<RuleItem> rule68out = new List<RuleItem>();
+
+            List<RuleItem> rule69in  = new List<RuleItem>();
+            List<RuleItem> rule69out = new List<RuleItem>();
+
+            List<RuleItem> rule70in  = new List<RuleItem>();
+            List<RuleItem> rule70out = new List<RuleItem>();
+
+            List<RuleItem> rule71in  = new List<RuleItem>();
+            List<RuleItem> rule71out = new List<RuleItem>();
+
+            List<RuleItem> rule72in  = new List<RuleItem>();
+            List<RuleItem> rule72out = new List<RuleItem>();
+
+            List<RuleItem> rule73in  = new List<RuleItem>();
+            List<RuleItem> rule73out = new List<RuleItem>();
+
+            List<RuleItem> rule74in  = new List<RuleItem>();
+            List<RuleItem> rule74out = new List<RuleItem>();
+
+            List<RuleItem> rule75in  = new List<RuleItem>();
+            List<RuleItem> rule75out = new List<RuleItem>();
+
+            //ligne 6
+            List<RuleItem> rule76in  = new List<RuleItem>();
+            List<RuleItem> rule76out = new List<RuleItem>();
+
+            List<RuleItem> rule77in  = new List<RuleItem>();
+            List<RuleItem> rule77out = new List<RuleItem>();
+
+            List<RuleItem> rule78in  = new List<RuleItem>();
+            List<RuleItem> rule78out = new List<RuleItem>();
+
+            List<RuleItem> rule79in  = new List<RuleItem>();
+            List<RuleItem> rule79out = new List<RuleItem>();
+
+            List<RuleItem> rule80in  = new List<RuleItem>();
+            List<RuleItem> rule80out = new List<RuleItem>();
+
+            List<RuleItem> rule81in  = new List<RuleItem>();
+            List<RuleItem> rule81out = new List<RuleItem>();
+
+            List<RuleItem> rule82in  = new List<RuleItem>();
+            List<RuleItem> rule82out = new List<RuleItem>();
+
+            List<RuleItem> rule83in  = new List<RuleItem>();
+            List<RuleItem> rule83out = new List<RuleItem>();
+
+            List<RuleItem> rule84in  = new List<RuleItem>();
+            List<RuleItem> rule84out = new List<RuleItem>();
+             
+            List<RuleItem> rule85in  = new List<RuleItem>();
+            List<RuleItem> rule85out = new List<RuleItem>();
+
+            List<RuleItem> rule86in  = new List<RuleItem>();
+            List<RuleItem> rule86out = new List<RuleItem>();
+
+            List<RuleItem> rule87in  = new List<RuleItem>();
+            List<RuleItem> rule87out = new List<RuleItem>();
+
+            List<RuleItem> rule88in  = new List<RuleItem>();
+            List<RuleItem> rule88out = new List<RuleItem>();
+
+            List<RuleItem> rule89in  = new List<RuleItem>();
+            List<RuleItem> rule89out = new List<RuleItem>();
+
+            List<RuleItem> rule90in  = new List<RuleItem>();
+            List<RuleItem> rule90out = new List<RuleItem>();
+
+            //LIGNE 7
+
+            List<RuleItem> rule91in  = new List<RuleItem>();
+            List<RuleItem> rule91out = new List<RuleItem>();
+
+            List<RuleItem> rule92in  = new List<RuleItem>();
+            List<RuleItem> rule92out = new List<RuleItem>();
+
+            List<RuleItem> rule93in  = new List<RuleItem>();
+            List<RuleItem> rule93out = new List<RuleItem>();
+
+            List<RuleItem> rule94in  = new List<RuleItem>();
+            List<RuleItem> rule94out = new List<RuleItem>();
+
+            List<RuleItem> rule95in  = new List<RuleItem>();
+            List<RuleItem> rule95out = new List<RuleItem>();
+
+            List<RuleItem> rule96in  = new List<RuleItem>();
+            List<RuleItem> rule96out = new List<RuleItem>();
+
+            List<RuleItem> rule97in  = new List<RuleItem>();
+            List<RuleItem> rule97out = new List<RuleItem>();
+
+            List<RuleItem> rule98in  = new List<RuleItem>();
+            List<RuleItem> rule98out = new List<RuleItem>();
+
+            List<RuleItem> rule99in = new List<RuleItem>();
+            List<RuleItem> rule99out = new List<RuleItem>();
+
+            List<RuleItem> rule100in = new List<RuleItem>();
+            List<RuleItem> rule100out = new List<RuleItem>();
+
+            List<RuleItem> rule101in = new List<RuleItem>();
+            List<RuleItem> rule101out = new List<RuleItem>();
+
+            List<RuleItem> rule102in = new List<RuleItem>();
+            List<RuleItem> rule102out = new List<RuleItem>();
+
+            List<RuleItem> rule103in = new List<RuleItem>();
+            List<RuleItem> rule103out = new List<RuleItem>();
+
+            List<RuleItem> rule104in = new List<RuleItem>();
+            List<RuleItem> rule104out = new List<RuleItem>();
+
+            List<RuleItem> rule105in = new List<RuleItem>();
+            List<RuleItem> rule105out = new List<RuleItem>();
+
+            //LIGNE 8
+            List<RuleItem> rule106in = new List<RuleItem>();
+            List<RuleItem> rule106out = new List<RuleItem>();
+
+            List<RuleItem> rule107in = new List<RuleItem>();
+            List<RuleItem> rule107out = new List<RuleItem>();
+
+            List<RuleItem> rule108in = new List<RuleItem>();
+            List<RuleItem> rule108out = new List<RuleItem>();
+
+            List<RuleItem> rule109in = new List<RuleItem>();
+            List<RuleItem> rule109out = new List<RuleItem>();
+
+            List<RuleItem> rule110in = new List<RuleItem>();
+            List<RuleItem> rule110out = new List<RuleItem>();
+
+            List<RuleItem> rule111in = new List<RuleItem>();
+            List<RuleItem> rule111out = new List<RuleItem>();
+
+            List<RuleItem> rule112in = new List<RuleItem>();
+            List<RuleItem> rule112out = new List<RuleItem>();
+
+            List<RuleItem> rule113in = new List<RuleItem>();
+            List<RuleItem> rule113out = new List<RuleItem>();
+
+            List<RuleItem> rule114in = new List<RuleItem>();
+            List<RuleItem> rule114out = new List<RuleItem>();
+
+            List<RuleItem> rule115in = new List<RuleItem>();
+            List<RuleItem> rule115out = new List<RuleItem>();
+
+            List<RuleItem> rule116in = new List<RuleItem>();
+            List<RuleItem> rule116out = new List<RuleItem>();
+
+            List<RuleItem> rule117in = new List<RuleItem>();
+            List<RuleItem> rule117out = new List<RuleItem>();
+
+            List<RuleItem> rule118in = new List<RuleItem>();
+            List<RuleItem> rule118out = new List<RuleItem>();
+
+            List<RuleItem> rule119in = new List<RuleItem>();
+            List<RuleItem> rule119out = new List<RuleItem>();
+
+            List<RuleItem> rule120in = new List<RuleItem>();
+            List<RuleItem> rule120out = new List<RuleItem>();
+            //LIGNE 9
+            List<RuleItem> rule121in = new List<RuleItem>();
+            List<RuleItem> rule121out = new List<RuleItem>();
+
+            List<RuleItem> rule122in = new List<RuleItem>();
+            List<RuleItem> rule122out = new List<RuleItem>();
+
+            List<RuleItem> rule123in = new List<RuleItem>();
+            List<RuleItem> rule123out = new List<RuleItem>();
+
+            List<RuleItem> rule124in = new List<RuleItem>();
+            List<RuleItem> rule124out = new List<RuleItem>();
+
+            List<RuleItem> rule125in = new List<RuleItem>();
+            List<RuleItem> rule125out = new List<RuleItem>();
+
+            List<RuleItem> rule126in = new List<RuleItem>();
+            List<RuleItem> rule126out = new List<RuleItem>();
+
+            List<RuleItem> rule127in = new List<RuleItem>();
+            List<RuleItem> rule127out = new List<RuleItem>();
+
+            List<RuleItem> rule128in = new List<RuleItem>();
+            List<RuleItem> rule128out = new List<RuleItem>();
+
+            List<RuleItem> rule129in = new List<RuleItem>();
+            List<RuleItem> rule129out = new List<RuleItem>();
+
+            List<RuleItem> rule130in = new List<RuleItem>();
+            List<RuleItem> rule130out = new List<RuleItem>();
+
+            List<RuleItem> rule131in = new List<RuleItem>();
+            List<RuleItem> rule131out = new List<RuleItem>();
+
+            List<RuleItem> rule132in = new List<RuleItem>();
+            List<RuleItem> rule132out = new List<RuleItem>();
+
+            List<RuleItem> rule133in = new List<RuleItem>();
+            List<RuleItem> rule133out = new List<RuleItem>();
+
+            List<RuleItem> rule134in = new List<RuleItem>();
+            List<RuleItem> rule134out = new List<RuleItem>();
+
+            List<RuleItem> rule135in = new List<RuleItem>();
+            List<RuleItem> rule135out = new List<RuleItem>();
+
+            //LIGNE 10
+            List<RuleItem> rule136in = new List<RuleItem>();
+            List<RuleItem> rule136out = new List<RuleItem>();
+
+            List<RuleItem> rule137in = new List<RuleItem>();
+            List<RuleItem> rule137out = new List<RuleItem>();
+
+            List<RuleItem> rule138in = new List<RuleItem>();
+            List<RuleItem> rule138out = new List<RuleItem>();
+
+            List<RuleItem> rule139in = new List<RuleItem>();
+            List<RuleItem> rule139out = new List<RuleItem>();
+
+            List<RuleItem> rule140in = new List<RuleItem>();
+            List<RuleItem> rule140out = new List<RuleItem>();
+
+            List<RuleItem> rule141in = new List<RuleItem>();
+            List<RuleItem> rule141out = new List<RuleItem>();
+
+            List<RuleItem> rule142in = new List<RuleItem>();
+            List<RuleItem> rule142out = new List<RuleItem>();
+
+            List<RuleItem> rule143in = new List<RuleItem>();
+            List<RuleItem> rule143out = new List<RuleItem>();
+
+            List<RuleItem> rule144in = new List<RuleItem>();
+            List<RuleItem> rule144out = new List<RuleItem>();
+
+            List<RuleItem> rule145in = new List<RuleItem>();
+            List<RuleItem> rule145out = new List<RuleItem>();
+
+            List<RuleItem> rule146in = new List<RuleItem>();
+            List<RuleItem> rule146out = new List<RuleItem>();
+
+            List<RuleItem> rule147in = new List<RuleItem>();
+            List<RuleItem> rule147out = new List<RuleItem>();
+
+            List<RuleItem> rule148in = new List<RuleItem>();
+            List<RuleItem> rule148out = new List<RuleItem>();
+
+            List<RuleItem> rule149in = new List<RuleItem>();
+            List<RuleItem> rule149out = new List<RuleItem>();
+
+            List<RuleItem> rule150in = new List<RuleItem>();
+            List<RuleItem> rule150out = new List<RuleItem>();
+            //LIGNE 11
+            List<RuleItem> rule151in = new List<RuleItem>();
+            List<RuleItem> rule151out = new List<RuleItem>();
+
+            List<RuleItem> rule152in = new List<RuleItem>();
+            List<RuleItem> rule152out = new List<RuleItem>();
+
+            List<RuleItem> rule153in = new List<RuleItem>();
+            List<RuleItem> rule153out = new List<RuleItem>();
+
+            List<RuleItem> rule154in = new List<RuleItem>();
+            List<RuleItem> rule154out = new List<RuleItem>();
+
+            List<RuleItem> rule155in = new List<RuleItem>();
+            List<RuleItem> rule155out = new List<RuleItem>();
+
+            List<RuleItem> rule156in = new List<RuleItem>();
+            List<RuleItem> rule156out = new List<RuleItem>();
+
+            List<RuleItem> rule157in = new List<RuleItem>();
+            List<RuleItem> rule157out = new List<RuleItem>();
+
+            List<RuleItem> rule158in = new List<RuleItem>();
+            List<RuleItem> rule158out = new List<RuleItem>();
+
+            List<RuleItem> rule159in = new List<RuleItem>();
+            List<RuleItem> rule159out = new List<RuleItem>();
+
+            List<RuleItem> rule160in = new List<RuleItem>();
+            List<RuleItem> rule160out = new List<RuleItem>();
+
+            List<RuleItem> rule161in = new List<RuleItem>();
+            List<RuleItem> rule161out = new List<RuleItem>();
+
+            List<RuleItem> rule162in = new List<RuleItem>();
+            List<RuleItem> rule162out = new List<RuleItem>();
+
+            List<RuleItem> rule163in = new List<RuleItem>();
+            List<RuleItem> rule163out = new List<RuleItem>();
+
+            List<RuleItem> rule164in = new List<RuleItem>();
+            List<RuleItem> rule164out = new List<RuleItem>();
+
+            List<RuleItem> rule165in = new List<RuleItem>();
+            List<RuleItem> rule165out = new List<RuleItem>();
+
+            //1er ligne dans le tableaux des regle            
+            rule1in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule1out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NF"), new RuleItem("Vg", "NF") });
+            //2
+            rule2in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule2out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "NM") });
+            //3
+            rule3in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule3out.AddRange(new RuleItem[2] { new RuleItem("Vd", "Z"), new RuleItem("Vg", "Z") });
+            //4
+            rule4in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule4out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "NM") });
+            //5
+            rule5in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule5out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NF"), new RuleItem("Vg", "NF") });
+            //1
+            rule6in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule6out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NF"), new RuleItem("Vg", "NF") });
+            //2
+            rule7in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule7out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NF"), new RuleItem("Vg", "NF") });
+            //3
+            rule8in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "P2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule8out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NF"), new RuleItem("Vg", "NF") });
+            //4
+            rule9in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule9out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NF"), new RuleItem("Vg", "NF") });
+            //5
+            rule10in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule10out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NF"), new RuleItem("Vg", "NF") });
+            //1
+            rule11in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule11out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NF"), new RuleItem("Vg", "NF") });
+            //2
+            rule12in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule12out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NF"), new RuleItem("Vg", "NF") });
+            //3
+            rule13in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule13out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NF"), new RuleItem("Vg", "NF") });
+            //4
+            rule14in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "P2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule14out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NF"), new RuleItem("Vg", "NF") });
+            //5
+            rule15in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule15out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NF"), new RuleItem("Vg", "NF") });
+
+
+            //2eme ligne dans le tableaux des regle
+            rule16in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule16out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "NF") });
+            //2
+            rule17in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule17out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "NM") });
+            //3
+            rule18in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule18out.AddRange(new RuleItem[2] { new RuleItem("Vd", "Z"), new RuleItem("Vg", "Z") });
+            //4
+            rule19in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule19out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "NM") });
+            //5
+            rule20in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule20out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "NF") });
+            //1
+            rule21in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule21out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "NF") });
+            //2
+            rule22in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule22out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "NM") });
+            //3
+            rule23in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule23out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "NM") });
+            //4
+            rule24in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule24out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "NM") });
+            //5
+            rule25in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule25out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "NF") });
+            //1
+            rule26in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule26out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "NF") });
+            //2
+            rule27in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule27out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "NM") });
+            //3
+            rule28in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "P2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule28out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "NM") });
+            //4
+            rule29in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "P2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule29out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "NM") });
+            //5
+            rule30in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule30out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "NF") });
+            //1
+            rule31in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule31out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NF"), new RuleItem("Vg", "PF") });
+            //2
+            rule32in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule32out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "PM") });
+            //3
+            rule33in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule33out.AddRange(new RuleItem[2] { new RuleItem("Vd", "Z"), new RuleItem("Vg", "Z") });
+            //4
+            rule34in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule34out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "PM") });
+            //5
+            rule35in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule35out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NF"), new RuleItem("Vg", "PF") });
+            //1
+            rule36in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule36out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NF"), new RuleItem("Vg", "PF") });
+            //2
+            rule37in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule37out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "PM") });
+            //3
+            rule38in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule38out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "PM") });
+            //4
+            rule39in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule39out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "PM") });
+            //5
+            rule40in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule40out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NF"), new RuleItem("Vg", "PF") });
+            //1
+            rule41in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule41out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NF"), new RuleItem("Vg", "PF") });
+            //2
+            rule42in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule42out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "PM") });
+            //3
+            rule43in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule43out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "PM") });
+            //4
+            rule44in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule44out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "PM") });
+            //5
+            rule45in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule45out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NF"), new RuleItem("Vg", "PF") });
+            ////////////////////////////////////////////////
+
+            //4eme ligne dans le tableaux des regle
+            //1
+            rule46in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule46out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "PM") });
+            //2
+            rule47in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule47out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "PM") });
+            //3
+            rule48in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule48out.AddRange(new RuleItem[2] { new RuleItem("Vd", "Z"), new RuleItem("Vg", "Z") });
+            //4
+            rule49in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule49out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "PM") });
+            //5
+            rule50in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule50out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NF"), new RuleItem("Vg", "PF") });
+            //1
+            rule51in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule51out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "PM") });
+            //2
+            rule52in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule52out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "PM") });
+            //3
+            rule53in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule53out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "PM") });
+            //4
+            rule54in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule54out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "PM") });
+            //5
+            rule55in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule55out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "PM") });
+            //1
+            rule56in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule56out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "PM") });
+            //2
+            rule57in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule57out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "PM") });
+            //3
+            rule58in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule58out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "PM") });
+            //4
+            rule59in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule59out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "PM") });
+            //5
+            rule60in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "N1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule60out.AddRange(new RuleItem[2] { new RuleItem("Vd", "NM"), new RuleItem("Vg", "PM") });
+
+            //5eme ligne dans le tableaux des regle
+            //1
+            rule61in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule61out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PM") });
+            //2
+            rule62in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule62out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PM") });
+            //3
+            rule63in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule63out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PS") });
+            //4
+            rule64in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule64out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PM") });
+            //5
+            rule65in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule65out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PM") });
+            //1
+            rule66in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule66out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PM") });
+            //2
+            rule67in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule67out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PM") });
+            //3
+            rule68in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule68out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PM") });
+            //4
+            rule69in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule69out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PM") });
+            //5
+            rule70in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule70out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PM") });
+            //1
+            rule71in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule71out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PM") });
+            //2
+            rule72in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule72out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PM") });
+            //3
+            rule73in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule73out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PM") });
+            //4
+            rule74in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule74out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PM") });
+            //5
+            rule75in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "N2"), new RuleItem("Cap3", "N3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule75out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PM") });
+
+            //6eme ligne dans le tableaux des regle
+            //1
+            rule76in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule76out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PM") });
+            //2
+            rule77in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule77out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PS") });
+            //3
+            rule78in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule78out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PS") });
+            //4
+            rule79in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule79out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PM") });
+            //5
+            rule80in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule80out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PF") });
+            //1
+            rule81in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule81out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PM") });
+            //2
+            rule82in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule82out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PS") });
+            //3
+            rule83in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule83out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PM") });
+            //4
+            rule84in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule84out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PM") });
+            //5
+            rule85in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule85out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PF") });
+            //1
+            rule86in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule86out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PM") });
+            //2
+            rule87in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule87out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PS") });
+            //3
+            rule88in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule88out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PF") });
+            //4
+            rule89in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule89out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PM") });
+            //5
+            rule90in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule90out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PF") });
+
+            //7eme ligne dans le tableaux des regle         
+            //1  
+            rule91in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule91out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PM") });
+            //2
+            rule92in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule92out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PS") });
+            //3
+            rule93in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule93out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PS") });
+            //4
+            rule94in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule94out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PM") });
+            //5
+            rule95in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "G2"), new RuleItem("Cap3", "G3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule95out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PF") });
+            //1
+            rule96in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule96out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PM") });
+            //2
+            rule97in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule97out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PS") });
+            //3
+            rule98in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule98out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PS") });
+            //4
+            rule99in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule99out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PM") });
+            //5
+            rule100in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule100out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PF") });
+            //1
+            rule101in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule101out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PM") });
+            //2
+            rule102in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "G3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule102out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PS") });
+            //3
+            rule103in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule103out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PF") });
+            //4
+            rule104in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule104out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PM") });
+            //5
+            rule105in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "M1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule105out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PF") });
+
+            //8eme ligne dans le tableaux des regle
+            //1
+            rule106in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule106out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PM") });
+            //2
+            rule107in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule107out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PS") });
+            //3
+            rule108in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule108out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PS") });
+            //4
+            rule109in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule109out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PM") });
+            //5
+            rule110in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule110out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PF") });
+            //1
+            rule111in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule111out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PM") });
+            //2
+            rule112in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule112out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PS") });
+            //3
+            rule113in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule113out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PM") });
+            //4
+            rule114in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule114out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PM") });
+            //5
+            rule115in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule115out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PF") });
+            //1
+            rule116in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule116out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PM") });
+            //2
+            rule117in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule117out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PS") });
+            //3
+            rule118in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule118out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PF") });
+            //4
+            rule119in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule119out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PM") });
+            //5
+            rule120in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule120out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PF") });
+
+            //9eme ligne dans le tableaux des regle
+            //1
+            rule121in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule121out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PM") });
+            //2
+            rule122in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule122out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PS") });
+            //3
+            rule123in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule123out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PS") });
+            //4
+            rule124in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule124out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PM") });
+            //5
+            rule125in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule125out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PF") });
+            //1
+            rule126in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule126out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PM") });
+            //2
+            rule127in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule127out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PS") });
+            //3
+            rule128in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule128out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PM") });
+            //4
+            rule129in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule129out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PM") });
+            //5
+            rule130in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule130out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PF") });
+            //1
+            rule131in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule131out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PM") });
+            //2
+            rule132in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule132out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PS") });
+            //3
+            rule133in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule133out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PF") });
+            //4
+            rule134in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule134out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PM") });
+            //5
+            rule135in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "M2"), new RuleItem("Cap3", "F3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule135out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PF") });
+
+            //10eme ligne dans le tableaux des regle
+            //1
+            rule136in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule136out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PM") });
+            //2
+            rule137in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule137out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PS") });
+            //3
+            rule138in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule138out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PS") });
+            //4
+            rule139in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule139out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PM") });
+            //5
+            rule140in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule140out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PF") });
+            //1
+            rule141in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule141out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PM") });
+            //2
+            rule142in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule142out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PS") });
+            //3
+            rule143in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "G1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule143out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PM") });
+            //4
+            rule144in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule144out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PM") });
+            //5
+            rule145in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule145out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PF") });
+            //1
+            rule146in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule146out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PM") });
+            //2
+            rule147in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "G2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule147out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PS") });
+            //3
+            rule148in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "G2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule148out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PF") });
+            //4
+            rule149in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule149out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PM") });
+            //5
+            rule150in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule150out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PF") });
+
+            //11eme ligne dans le tableaux des regle
+
+            /*remarque pour Raouf : les ligne 10 et 11 dans la table des regle sont les meme
+             * mais je vous proposee de remlacer ("cap3", "M3") par ("cap3","G3") dans la 11eme ligne de la table des regles   
+             * pour cela, changer les parametres precidents dans les lignes de programe qui suit (ligne 11 dans la table des ragles)
+             * 
+             * */
+            //1
+            rule151in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule151out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PM") });
+            //2
+            rule152in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule152out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PS") });
+            //3
+            rule153in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule153out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PS") });
+            //4
+            rule154in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule154out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PM") });
+            //5
+            rule155in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "S"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule155out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PF") });
+            //1
+            rule156in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule156out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PM") });
+            //2
+            rule157in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule157out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PS") });
+            //3
+            rule158in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule158out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PM") });
+            //4
+            rule159in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule159out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PM") });
+            //5
+            rule160in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "M"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule160out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PF") });
+            //1
+            rule161in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule161out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PM") });
+            //2
+            rule162in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "LM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule162out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PS") });
+            //3
+            rule163in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "Z"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule163out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PF"), new RuleItem("Vg", "PF") });
+            //4
+            rule164in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RS"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule164out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PS"), new RuleItem("Vg", "PM") });
+            //5
+            rule165in.AddRange(new RuleItem[5] { new RuleItem("E_Distance", "B"), new RuleItem("E_Angle", "RM"), new RuleItem("Cap1", "F1"), new RuleItem("Cap2", "F2"), new RuleItem("Cap3", "M3") }); // pas d'obstacles et cible loi avec E_angle =0
+            rule165out.AddRange(new RuleItem[2] { new RuleItem("Vd", "PM"), new RuleItem("Vg", "PF") });
+            ////////////////////////////////////////////////////////////////////////////////////////////////
+            /*
+           //évitement d'obstacles
+            rule7in.AddRange(new RuleItem[3] { new RuleItem("Cap1", "P1"), new RuleItem("Cap2", "G2"), new RuleItem("Cap3", "G3") }); // pas d'obstacles avant et à gauche et E_angle =0
+            rule7out.AddRange(new RuleItem[2] { new RuleItem("Vd", "z_d"), new RuleItem("Vg", "M_g") });  // vers la gauche pour minimiser E_angle
+            */
+            // rule7in.AddRange(new RuleItem[3] { new RuleItem("Cap1", "P1"), new RuleItem("Cap2", "G2"), new RuleItem("Cap3", "G3") }); // pas d'obstacles avant et à gauche et E_angle =0
+            // rule7out.AddRange(new RuleItem[2] { new RuleItem("Vd", "z_d"), new RuleItem("Vg", "M_g") });  // vers la gauche pour minimiser E_angle
+            List<Rule> rules = new List<Rule>();
+            // LIGNE 1
+            rules.Add(new Rule(rule1in, rule1out, Connector.And));
+            rules.Add(new Rule(rule2in, rule2out, Connector.And));
+            rules.Add(new Rule(rule3in, rule3out, Connector.And));
+            rules.Add(new Rule(rule4in, rule4out, Connector.And));
+            rules.Add(new Rule(rule5in, rule5out, Connector.And));
+            rules.Add(new Rule(rule6in, rule6out, Connector.And));
+            rules.Add(new Rule(rule7in, rule7out, Connector.And));
+            rules.Add(new Rule(rule8in, rule8out, Connector.And));
+            rules.Add(new Rule(rule9in, rule9out, Connector.And));
+            rules.Add(new Rule(rule10in, rule10out, Connector.And));
+            rules.Add(new Rule(rule11in, rule11out, Connector.And));
+            rules.Add(new Rule(rule12in, rule12out, Connector.And));
+            rules.Add(new Rule(rule13in, rule13out, Connector.And));
+            rules.Add(new Rule(rule14in, rule14out, Connector.And));
+            rules.Add(new Rule(rule15in, rule15out, Connector.And));
+            //LIGNE 2
+            rules.Add(new Rule(rule16in, rule16out, Connector.And));
+            rules.Add(new Rule(rule17in, rule17out, Connector.And));
+            rules.Add(new Rule(rule18in, rule18out, Connector.And));
+            rules.Add(new Rule(rule19in, rule19out, Connector.And));
+            rules.Add(new Rule(rule20in, rule20out, Connector.And));
+            rules.Add(new Rule(rule21in, rule21out, Connector.And));
+            rules.Add(new Rule(rule22in, rule22out, Connector.And));
+            rules.Add(new Rule(rule23in, rule23out, Connector.And));
+            rules.Add(new Rule(rule24in, rule24out, Connector.And));
+            rules.Add(new Rule(rule25in, rule25out, Connector.And));
+            rules.Add(new Rule(rule26in, rule26out, Connector.And));
+            rules.Add(new Rule(rule27in, rule27out, Connector.And));
+            rules.Add(new Rule(rule28in, rule28out, Connector.And));
+            rules.Add(new Rule(rule29in, rule29out, Connector.And));
+            rules.Add(new Rule(rule30in, rule30out, Connector.And));
+            //LIGNE 3
+            rules.Add(new Rule(rule31in, rule31out, Connector.And));
+            rules.Add(new Rule(rule32in, rule32out, Connector.And));
+            rules.Add(new Rule(rule33in, rule33out, Connector.And));
+            rules.Add(new Rule(rule34in, rule34out, Connector.And));
+            rules.Add(new Rule(rule35in, rule35out, Connector.And));
+            rules.Add(new Rule(rule36in, rule36out, Connector.And));
+            rules.Add(new Rule(rule37in, rule37out, Connector.And));
+            rules.Add(new Rule(rule38in, rule38out, Connector.And));
+            rules.Add(new Rule(rule39in, rule39out, Connector.And));
+            rules.Add(new Rule(rule40in, rule40out, Connector.And));
+            rules.Add(new Rule(rule41in, rule41out, Connector.And));
+            rules.Add(new Rule(rule42in, rule42out, Connector.And));
+            rules.Add(new Rule(rule43in, rule43out, Connector.And));
+            rules.Add(new Rule(rule44in, rule44out, Connector.And));
+            rules.Add(new Rule(rule45in, rule45out, Connector.And));
+            //LIGNE 4
+            rules.Add(new Rule(rule46in, rule46out, Connector.And));
+            rules.Add(new Rule(rule47in, rule47out, Connector.And));
+            rules.Add(new Rule(rule48in, rule48out, Connector.And));
+            rules.Add(new Rule(rule49in, rule49out, Connector.And));
+            rules.Add(new Rule(rule50in, rule50out, Connector.And));
+            rules.Add(new Rule(rule51in, rule51out, Connector.And));
+            rules.Add(new Rule(rule52in, rule52out, Connector.And));
+            rules.Add(new Rule(rule53in, rule53out, Connector.And));
+            rules.Add(new Rule(rule54in, rule54out, Connector.And));
+            rules.Add(new Rule(rule55in, rule55out, Connector.And));
+            rules.Add(new Rule(rule56in, rule56out, Connector.And));
+            rules.Add(new Rule(rule57in, rule57out, Connector.And));
+            rules.Add(new Rule(rule58in, rule58out, Connector.And));
+            rules.Add(new Rule(rule59in, rule59out, Connector.And));
+            rules.Add(new Rule(rule60in, rule60out, Connector.And));
+            //LIGNE 5
+            rules.Add(new Rule(rule61in, rule61out, Connector.And));
+            rules.Add(new Rule(rule62in, rule62out, Connector.And));
+            rules.Add(new Rule(rule63in, rule63out, Connector.And));
+            rules.Add(new Rule(rule64in, rule64out, Connector.And));
+            rules.Add(new Rule(rule65in, rule65out, Connector.And));
+            rules.Add(new Rule(rule66in, rule66out, Connector.And));
+            rules.Add(new Rule(rule67in, rule67out, Connector.And));
+            rules.Add(new Rule(rule68in, rule68out, Connector.And));
+            rules.Add(new Rule(rule69in, rule69out, Connector.And));
+            rules.Add(new Rule(rule70in, rule70out, Connector.And));
+            rules.Add(new Rule(rule71in, rule71out, Connector.And));
+            rules.Add(new Rule(rule72in, rule72out, Connector.And));
+            rules.Add(new Rule(rule73in, rule73out, Connector.And));
+            rules.Add(new Rule(rule74in, rule74out, Connector.And));
+            rules.Add(new Rule(rule75in, rule75out, Connector.And));
+            //LIGNE 6
+            rules.Add(new Rule(rule76in, rule76out, Connector.And));
+            rules.Add(new Rule(rule77in, rule77out, Connector.And));
+            rules.Add(new Rule(rule78in, rule78out, Connector.And));
+            rules.Add(new Rule(rule79in, rule79out, Connector.And));
+            rules.Add(new Rule(rule80in, rule80out, Connector.And));
+            rules.Add(new Rule(rule81in, rule81out, Connector.And));
+            rules.Add(new Rule(rule82in, rule82out, Connector.And));
+            rules.Add(new Rule(rule83in, rule83out, Connector.And));
+            rules.Add(new Rule(rule84in, rule84out, Connector.And));
+            rules.Add(new Rule(rule85in, rule85out, Connector.And));
+            rules.Add(new Rule(rule86in, rule86out, Connector.And));
+            rules.Add(new Rule(rule87in, rule87out, Connector.And));
+            rules.Add(new Rule(rule88in, rule88out, Connector.And));
+            rules.Add(new Rule(rule89in, rule89out, Connector.And));
+            rules.Add(new Rule(rule90in, rule90out, Connector.And));
+            //ligne 7
+            rules.Add(new Rule(rule91in, rule91out, Connector.And));
+            rules.Add(new Rule(rule92in, rule92out, Connector.And));
+            rules.Add(new Rule(rule93in, rule93out, Connector.And));
+            rules.Add(new Rule(rule94in, rule94out, Connector.And));
+            rules.Add(new Rule(rule95in, rule95out, Connector.And));
+            rules.Add(new Rule(rule96in, rule96out, Connector.And));
+            rules.Add(new Rule(rule97in, rule97out, Connector.And));
+            rules.Add(new Rule(rule98in, rule98out, Connector.And));
+            rules.Add(new Rule(rule99in, rule99out, Connector.And));
+            rules.Add(new Rule(rule100in, rule100out, Connector.And));
+            rules.Add(new Rule(rule101in, rule101out, Connector.And));
+            rules.Add(new Rule(rule102in, rule102out, Connector.And));
+            rules.Add(new Rule(rule103in, rule103out, Connector.And));
+            rules.Add(new Rule(rule104in, rule104out, Connector.And));
+            rules.Add(new Rule(rule105in, rule105out, Connector.And));
+            //LIGNE 8
+            rules.Add(new Rule(rule106in, rule106out, Connector.And));
+            rules.Add(new Rule(rule107in, rule107out, Connector.And));
+            rules.Add(new Rule(rule108in, rule108out, Connector.And));
+            rules.Add(new Rule(rule109in, rule109out, Connector.And));
+            rules.Add(new Rule(rule110in, rule110out, Connector.And));
+            rules.Add(new Rule(rule111in, rule111out, Connector.And));
+            rules.Add(new Rule(rule112in, rule112out, Connector.And));
+            rules.Add(new Rule(rule113in, rule113out, Connector.And));
+            rules.Add(new Rule(rule114in, rule114out, Connector.And));
+            rules.Add(new Rule(rule115in, rule115out, Connector.And));
+            rules.Add(new Rule(rule116in, rule116out, Connector.And));
+            rules.Add(new Rule(rule117in, rule117out, Connector.And));
+            rules.Add(new Rule(rule118in, rule118out, Connector.And));
+            rules.Add(new Rule(rule119in, rule119out, Connector.And));
+            rules.Add(new Rule(rule120in, rule120out, Connector.And));
+            //LIGNE 9
+
+            rules.Add(new Rule(rule121in, rule121out, Connector.And));
+            rules.Add(new Rule(rule122in, rule122out, Connector.And));
+            rules.Add(new Rule(rule123in, rule123out, Connector.And));
+            rules.Add(new Rule(rule124in, rule124out, Connector.And));
+            rules.Add(new Rule(rule125in, rule125out, Connector.And));
+            rules.Add(new Rule(rule126in, rule126out, Connector.And));
+            rules.Add(new Rule(rule127in, rule127out, Connector.And));
+            rules.Add(new Rule(rule128in, rule128out, Connector.And));
+            rules.Add(new Rule(rule129in, rule129out, Connector.And));
+            rules.Add(new Rule(rule130in, rule130out, Connector.And));
+            rules.Add(new Rule(rule131in, rule131out, Connector.And));
+            rules.Add(new Rule(rule132in, rule132out, Connector.And));
+            rules.Add(new Rule(rule133in, rule133out, Connector.And));
+            rules.Add(new Rule(rule134in, rule134out, Connector.And));
+            rules.Add(new Rule(rule135in, rule135out, Connector.And));
+
+            //LIGNE 10
+            rules.Add(new Rule(rule136in, rule136out, Connector.And));
+            rules.Add(new Rule(rule137in, rule137out, Connector.And));
+            rules.Add(new Rule(rule138in, rule138out, Connector.And));
+            rules.Add(new Rule(rule139in, rule139out, Connector.And));
+            rules.Add(new Rule(rule140in, rule140out, Connector.And));
+            rules.Add(new Rule(rule141in, rule141out, Connector.And));
+            rules.Add(new Rule(rule142in, rule142out, Connector.And));
+            rules.Add(new Rule(rule143in, rule143out, Connector.And));
+            rules.Add(new Rule(rule144in, rule144out, Connector.And));
+            rules.Add(new Rule(rule145in, rule145out, Connector.And));
+            rules.Add(new Rule(rule146in, rule146out, Connector.And));
+            rules.Add(new Rule(rule147in, rule147out, Connector.And));
+            rules.Add(new Rule(rule148in, rule148out, Connector.And));
+            rules.Add(new Rule(rule149in, rule149out, Connector.And));
+            rules.Add(new Rule(rule150in, rule150out, Connector.And));
+            //LIGNE 11
+            rules.Add(new Rule(rule151in, rule151out, Connector.And));
+            rules.Add(new Rule(rule152in, rule152out, Connector.And));
+            rules.Add(new Rule(rule153in, rule153out, Connector.And));
+            rules.Add(new Rule(rule154in, rule154out, Connector.And));
+            rules.Add(new Rule(rule155in, rule155out, Connector.And));
+            rules.Add(new Rule(rule156in, rule156out, Connector.And));
+            rules.Add(new Rule(rule157in, rule157out, Connector.And));
+            rules.Add(new Rule(rule158in, rule158out, Connector.And));
+            rules.Add(new Rule(rule159in, rule159out, Connector.And));
+            rules.Add(new Rule(rule160in, rule160out, Connector.And));
+            rules.Add(new Rule(rule161in, rule161out, Connector.And));
+            rules.Add(new Rule(rule162in, rule162out, Connector.And));
+            rules.Add(new Rule(rule163in, rule163out, Connector.And));
+            rules.Add(new Rule(rule164in, rule164out, Connector.And));
+            rules.Add(new Rule(rule165in, rule165out, Connector.And));
+
+            InferEngine engine = new InferEngine(conf, rules, fuzset);
+
+            List<FuzzySet> impli = engine.evaluateRules();
+
+            DisplayReceiveMessag_USB("3. Fuzzy Output After Rules Evaluation \n");
+            for (int i = 0; i < engine.FiredRules.Count; i++)
+            {
+                Console.WriteLine("Rule " + engine.FiredRules[i].ToString());
+            }
+            for (int i = 0; i < impli.Count; i++)
+            {
+                DisplayReceiveMessag_USB(impli[i].Variable);
+
+                for (int j = 0; j < impli[i].Set.Count; j++)
+                {
+                    DisplayReceiveMessag_USB(impli[i].Set[j].ToString());
+                }
+            }
+            double speed1 = c.DeFuzzification(impli, Vd);
+            double speed2 = c.DeFuzzification(impli, Vg);
+            Vellocity[0] = (int)(speed1);
+            Vellocity[1] = (int)(speed2);
+
+            DisplayReceiveMessag_USB("4. Outputs: \n");
+            DisplayReceiveMessag_USB("Output V_Right= " + speed1.ToString());
+            DisplayReceiveMessag_USB("Output V_Left= " + speed2.ToString());
+
+            return Vellocity;
+        }
+        //======================================================================================================
+        //============================================< La boucle de calcule >==================================
+        //======================================================================================================
+        private void timer1_Tick(object sender, EventArgs e)
+        {// chaque 10 MS lansce la localisation puis run the Fuzzy_controller while using CAP1 CAP2 CAP3
+
+            double[] erreurs_ = Localise_Robot(Speed_sent[0], Speed_sent[1]);
+            Speed_sent = FuzzyCalcule_Velocity(erreurs_[0], erreurs_[1], cap1, cap2, cap3);// au debut il y a pas d'obstacles
+
+            if (connected)
+            {
+                bool sens_droit = true; if (Speed_sent[0] < 0) sens_droit = false;
+                bool sens_gauche = true; if (Speed_sent[1] < 0) sens_gauche = false;
+
+                SendToRobot(sens_droit, sens_gauche, Speed_sent[0], Speed_sent[0]);
+            }
+            else { MessageBox.Show("You must connect the robot ! "); return; }
+
+        }
+        private void trackBar1_Scroll(object sender, EventArgs e)
+        {
+            consignevolt.Text = trackBar1.Value.ToString("00");
+            if (int.Parse(consignevolt.Text) > 11) consignevolt.Text = "11";
+        }
+        private void trackBar2_Scroll(object sender, EventArgs e)
+        {
+            consignevitesse.Text = trackBar2.Value.ToString("00");
+            if (int.Parse(consignevitesse.Text) > VitesseMAx) consignevitesse.Text = Convert.ToString(VitesseMAx);
+        }
+        private void Stop_Click(object sender, EventArgs e)
+        {
+            serialPort1.Write("a");
+            serialPort1.DiscardOutBuffer();
+            DisplayReceiveMessag_USB(" Stop the Robot ");
+        }
+        private void button4_Click(object sender, EventArgs e)
+        {
+            //E_Distance = 10;
+            if (checkBox3.Checked == true)
+            {
+                float.TryParse(consignevolt.Text, out consigne_droit); //la consigne_droit = textBox1.txt 
+                if (consigne_droit > 12) consigne_droit = 12;   // 11 V est la valeur Maximale qu'on peut donner à notre moteur           
+                float x = (consigne_droit / 12) * 41; // en tour/s   
+                consigne_droit = x;
+
+            //    for (int y = 0; y < 2; y++) SendToRobot((int)consigne_droit);
+            }
+            //pour le teste
+            for (int y = 0; y < 2; y++)
+            //    SendToRobot(int.Parse(consignevolt.Text));
+                     
+            if (identification)
+            {
+                if (checkBox3.Checked == true)
+                {
+                    float.TryParse(consignevolt.Text, out consigne_droit); //la consigne_droit = textBox1.txt 
+                    if (consigne_droit > 11) consigne_droit = 11;   // 11 V est la valeur Maximale qu'on peut donner à notre moteur           
+                    float x = (consigne_droit / 11) * VitesseMAx; // en rad/s   
+                    consigne_droit = x;
+                }
+
+                else //Consigne variable 
+                {
+                    if (int.Parse(consignevitesse.Text) > VitesseMAx) consignevitesse.Text = Convert.ToString(VitesseMAx);
+                    float.TryParse(consignevitesse.Text, out consigne_droit);
+                }
+            }
+            consigne_droit = 120;
+
+                           //serialPort1.WriteLine
+              //  SendToRobot(56);// wbuffer, 0, wbuffer.Length);
+                serialPort1.DiscardOutBuffer();          
+         
+        }
+        private void checkBox1_CheckedChanged(object sender, EventArgs e)
+        {
+            if (checkBox1.Checked) identification = true;
+
+        }
+        private void button6_Click(object sender, EventArgs e)
+        {
+            SendToRobot(true, true, int.Parse(numericUpDown1.Text ), int.Parse(numericUpDown1.Text) + 5);
+            DisplayReceiveMessag_USB("Avancer");
+
+        }
+
+
+        private void Actualisar(object s, EventArgs e)
+        {
+            textBox8.Text = Convert.ToString(CurrentPosRobot.x);
+            textBox7.Text = Convert.ToString(CurrentPosRobot.y);
+            textBox15.Text = Convert.ToString(CurrentPosRobot.titha);
+            textBox6.Text = Convert.ToString(E_Angle);
+            textBox5.Text = Convert.ToString(E_Distance);
+            textBox10.Text = Convert.ToString(cap1);
+            textBox9.Text = Convert.ToString(cap2);
+            textBox11.Text = Convert.ToString(cap3);
+        }
+        private void button10_Click(object sender, EventArgs e)
+        {
+            // initialisation et calcule les erreurs puis on lance la navigation 
+            int d = int.Parse(textBox14.Text);
+            Te = d / 1000;  // Te en S
+            Cible.x = new double(); Cible.x = double.Parse(textBox3.Text);
+            Cible.y = new double(); Cible.y = double.Parse(textBox4.Text);
+            Cible.titha = new double(); Cible.titha = InitPosRobot.titha = Math.Atan2(Cible.y, Cible.x) * (180 / Math.PI); ;
+
+            InitPosRobot.x = new double(); InitPosRobot.x = double.Parse(textBox1.Text);
+            InitPosRobot.y = new double(); InitPosRobot.y = double.Parse(textBox2.Text);
+            InitPosRobot.titha = new double(); InitPosRobot.titha = Math.Atan2(InitPosRobot.y, InitPosRobot.x) * (180 / Math.PI);
+
+            CurrentPosRobot.x = new double(); CurrentPosRobot.x = InitPosRobot.x;
+            CurrentPosRobot.y = new double(); CurrentPosRobot.y = InitPosRobot.y;
+            CurrentPosRobot.titha = new double(); CurrentPosRobot.titha = InitPosRobot.titha;
+
+            E_Distance = Math.Sqrt((InitPosRobot.x - Cible.x) * (InitPosRobot.x - Cible.x) + (InitPosRobot.y - Cible.y) * (InitPosRobot.y - Cible.y));
+            E_Angle = InitPosRobot.titha - Cible.titha;
+            //Localise_Robot(0, 0);
+            textBox6.Text = Convert.ToString(E_Angle);
+            textBox5.Text = Convert.ToString((int)E_Distance);
+
+            textBox8.Text = Convert.ToString(CurrentPosRobot.x);
+            textBox7.Text = Convert.ToString(CurrentPosRobot.y);
+            textBox15.Text = Convert.ToString(CurrentPosRobot.titha);
+
+            if (checkBox2.Checked) // si on est dans le mode controle odu robot
+            {               
+                Speed_sent = FuzzyCalcule_Velocity(E_Angle, E_Distance, cap1, cap2, cap3);// au debut il y a pas d'obstacles
+
+                if (connected)
+                {
+                    bool sens_droit = true;  if (Speed_sent[0] < 0) sens_droit = false;
+                    bool sens_gauche = true; if (Speed_sent[1] < 0) sens_gauche = false;
+
+                    SendToRobot(sens_droit, sens_gauche, Speed_sent[0], Speed_sent[0]);                 
+                }
+
+                else MessageBox.Show("You must connect the robot ! ");
+                timer1.Interval = int.Parse(textBox14.Text);
+                timer1.Enabled = true; // Enable the timer to start 
+            }
+        }
+        private void button8_Click(object sender, EventArgs e)
+        {
+      
+            SendToRobot(true, true, int.Parse(numericUpDown1.Text+10), int.Parse(numericUpDown1.Text) + 5);          
+            DisplayReceiveMessag_USB("à droite");
+
+        }
+
+        private void FuzzyController_Load(object sender, EventArgs e)
+        {
+
+            textBox1.Text = Convert.ToString(PosInit.x);
+            textBox2.Text = Convert.ToString(PosInit.y);
+
+            textBox4.Text = Convert.ToString(targetPos.x);
+            textBox3.Text = Convert.ToString(targetPos.y);
+        }
+
+        private void button9_Click(object sender, EventArgs e)
+        {
+            SendToRobot(false, false, int.Parse(numericUpDown1.Text), int.Parse(numericUpDown1.Text) );
+            DisplayReceiveMessag_USB("Back");
+        }
+      
+    }
+}
